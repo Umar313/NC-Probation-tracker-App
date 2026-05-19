@@ -1312,9 +1312,33 @@ function updateNotifPreview(status, extDays='') {
 }
 
 function submitForm() {
+  // Determine selected status
+  const isCompleted = document.getElementById('rb-completed').classList.contains('selected-green');
+  const newStatus   = isCompleted ? 'completed' : 'extended';
+
+  // Find extension days if extended
+  let extDays = '';
+  if (!isCompleted) {
+    ['30','60','90'].forEach(d => {
+      if (document.getElementById('ext-'+d).classList.contains('selected-amber')) extDays = d;
+    });
+    if (!extDays) { showToast('⚠️ Please select an extension duration', 'warn'); return; }
+  }
+
+  // Update joiner in array
+  const idx = joiners.findIndex(j => j.name === formEmployee);
+  if (idx !== -1) {
+    joiners[idx].status = newStatus;
+    if (newStatus === 'extended' && extDays) joiners[idx].extDays = parseInt(extDays);
+    joiners[idx].assessedOn = new Date().toISOString().split('T')[0];
+    saveJoiners();
+    updateStatCards();
+    renderJoiners(getFilteredList());
+  }
+
   showToast('✅ Probation status updated and notifications dispatched!', 'success');
   setTimeout(() => showToast('📨 Email sent to employee, HR Recruiter & HRBP', 'info'), 1200);
-  if (formReferrer) setTimeout(() => showToast(`🎉 Referral notification sent to ${formReferrer}`, 'success'), 2400);
+  if (formReferrer && newStatus === 'completed') setTimeout(() => showToast(`🎉 Referral notification sent to ${formReferrer}`, 'success'), 2400);
   setTimeout(() => showToast('🔗 ATS record updated successfully', 'info'), 3200);
   closeModal('form-modal');
 }
@@ -1327,14 +1351,110 @@ function toggleReferralField(v) {
 }
 
 // ────────────────────────────────────────────
+// PERSISTENCE — localStorage
+// ────────────────────────────────────────────
+const STORAGE_KEY = 'nc_probation_joiners_v1';
+
+function saveJoiners() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(joiners)); } catch(e) {}
+}
+
+function loadSavedJoiners() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      joiners.length = 0;
+      parsed.forEach(j => joiners.push(j));
+    }
+  } catch(e) {}
+}
+
+// ────────────────────────────────────────────
 // ADD JOINER
 // ────────────────────────────────────────────
+const AVATAR_COLORS = ['av-blue','av-teal','av-purple','av-amber','av-rose','av-green','av-navy','av-orange','av-red'];
+
 function addJoiner() {
-  const name = document.getElementById('add-name').value.trim();
-  const doj  = document.getElementById('add-doj').value;
-  if (!name || !doj) { showToast('Please fill required fields','warn'); return; }
-  showToast(`✅ ${name} added! Tracking started. Reminder scheduled for day 150.`, 'success');
+  const name     = document.getElementById('add-name').value.trim();
+  const empid    = document.getElementById('add-empid').value.trim();
+  const dept     = document.getElementById('add-dept').value;
+  const desig    = document.getElementById('add-desig').value.trim() || 'Employee';
+  const doj      = document.getElementById('add-doj').value;
+  const email    = document.getElementById('add-email').value.trim();
+  const manager  = document.getElementById('add-manager').value;
+  const recruiter= document.getElementById('add-recruiter').value;
+  const hrbp     = document.getElementById('add-hrbp').value;
+  const isRef    = document.getElementById('add-referral').value === 'yes';
+  const referrer = isRef ? document.getElementById('add-referrer').value.trim() : '';
+
+  // Validation
+  if (!name)    { showToast('⚠️ Employee name is required', 'warn'); return; }
+  if (!doj)     { showToast('⚠️ Date of joining is required', 'warn'); return; }
+  if (!dept)    { showToast('⚠️ Please select a department', 'warn'); return; }
+  if (!manager) { showToast('⚠️ Please select a hiring manager', 'warn'); return; }
+  if (isRef && !referrer) { showToast('⚠️ Please enter the referrer name', 'warn'); return; }
+
+  // Build initials
+  const parts = name.split(' ').filter(Boolean);
+  const initials = (parts[0]?.[0] || '') + (parts[1]?.[0] || parts[0]?.[1] || '');
+
+  // Pick color based on name hash
+  const colorIndex = name.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR_COLORS.length;
+
+  const newJoiner = {
+    id       : Date.now(),
+    name, initials: initials.toUpperCase(),
+    color    : AVATAR_COLORS[colorIndex],
+    dept, desig,
+    doj, email,
+    manager, recruiter, hrbp,
+    referral : isRef,
+    referrer,
+    reminders: 0,
+    status   : 'active'
+  };
+
+  joiners.unshift(newJoiner); // add to top
+  saveJoiners();
+  updateStatCards();
+
+  // Reset form
+  ['add-name','add-empid','add-desig','add-email','add-referrer'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('add-dept').value = '';
+  document.getElementById('add-manager').value = '';
+  document.getElementById('add-doj').value = '';
+  document.getElementById('add-referral').value = 'no';
+  document.getElementById('referrer-field').style.display = 'none';
+
   closeModal('add-modal');
+
+  // Navigate to joiners tab and show new entry
+  navigate('joiners');
+  showToast(`✅ ${name} added! 180-day tracking started.`, 'success');
+  setTimeout(() => showToast('📬 Reminder scheduled for Day 150', 'info'), 1000);
+}
+
+// ────────────────────────────────────────────
+// UPDATE STAT CARDS DYNAMICALLY
+// ────────────────────────────────────────────
+function updateStatCards() {
+  const total     = joiners.length;
+  const completed = joiners.filter(j => j.status === 'completed').length;
+  const extended  = joiners.filter(j => j.status === 'extended').length;
+  const overdue   = joiners.filter(j => j.status === 'overdue' || (j.status === 'active' && daysLeft(j.doj) < 0)).length;
+
+  const cards = document.querySelectorAll('#page-dashboard .stat-card .stat-value');
+  if (cards[0]) cards[0].textContent = total;
+  if (cards[1]) cards[1].textContent = completed;
+  if (cards[2]) cards[2].textContent = extended;
+  if (cards[3]) cards[3].textContent = overdue;
+
+  // Update sidebar badge
+  const badge = document.querySelector('[onclick="navigate(\'joiners\')"] .nav-badge');
+  if (badge) badge.textContent = total;
 }
 
 // ────────────────────────────────────────────
@@ -1366,7 +1486,9 @@ function sendRemindersAll() {
 // ────────────────────────────────────────────
 // INIT
 // ────────────────────────────────────────────
+loadSavedJoiners();
 renderJoiners(joiners);
+updateStatCards();
 </script>
 </body>
 </html>
